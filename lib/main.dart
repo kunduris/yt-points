@@ -1,209 +1,219 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-final api = Supabase.instance.client;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Supabase.initialize(
-    url: const String.fromEnvironment('SUPABASE_URL'),
-    anonKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY'),
-  );
-  runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: Gate()));
+  runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: Home()));
 }
-
-class Gate extends StatefulWidget {
-  const Gate({super.key});
-  @override
-  State<Gate> createState() => _GateState();
+Future<List<dynamic>> readKids() async {
+  final prefs = await SharedPreferences.getInstance();
+  return jsonDecode(prefs.getString('yt_kids_v1') ?? '[]') as List<dynamic>;
 }
-class _GateState extends State<Gate> {
-  @override
-  void initState() {
-    super.initState();
-    api.auth.onAuthStateChange.listen((_) { if (mounted) setState(() {}); });
-  }
-  @override
-  Widget build(BuildContext context) => api.auth.currentUser == null
-      ? const LoginPage() : const KidsPage();
+Future<void> writeKids(List<dynamic> kids) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('yt_kids_v1', jsonEncode(kids));
 }
-
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
-  @override
-  State<LoginPage> createState() => _LoginPageState();
+int total(Map<String,dynamic> kid) => (kid['history'] as List).fold<int>(
+  0, (sum, item) => sum + (item['delta'] as num).toInt());
+String money(int points) => String.fromCharCode(36) + (points * .5).toStringAsFixed(2);
+Widget face(Map<String,dynamic> kid, double size) {
+  final photo = kid['photo']?.toString() ?? '';
+  return CircleAvatar(radius:size/2,backgroundColor:const Color(0xffe5d6ff),
+    backgroundImage:photo.isNotEmpty && File(photo).existsSync() ? FileImage(File(photo)) : null,
+    child:photo.isNotEmpty && File(photo).existsSync() ? null :
+      Text((kid['name'] as String).substring(0,1).toUpperCase(),style:TextStyle(fontSize:size*.42)));
 }
-class _LoginPageState extends State<LoginPage> {
-  final email = TextEditingController();
-  final password = TextEditingController();
-  String message = '';
-  Future<void> submit(bool signup) async {
-    try {
-      if (signup) {
-        await api.auth.signUp(email: email.text.trim(), password: password.text);
-        setState(() => message = 'Check your email to confirm your account.');
-      } else {
-        await api.auth.signInWithPassword(email: email.text.trim(), password: password.text);
-      }
-    } catch (e) { setState(() => message = e.toString()); }
-  }
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('YT Points')),
-    body: Padding(padding: const EdgeInsets.all(24), child: Column(
-      mainAxisAlignment: MainAxisAlignment.center, children: [
-      TextField(controller: email, decoration: const InputDecoration(labelText: 'Parent email')),
-      TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
-      FilledButton(onPressed: () => submit(false), child: const Text('Sign in')),
-      TextButton(onPressed: () => submit(true), child: const Text('Create account')),
-      Text(message),
-    ])),
-  );
+Future<String?> ask(BuildContext context,String title,{bool numeric=false}) async {
+  final controller=TextEditingController();
+  final answer=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(
+    title:Text(title),
+    content:TextField(controller:controller,autofocus:true,
+      keyboardType:numeric?const TextInputType.numberWithOptions(decimal:true):TextInputType.text),
+    actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),
+      FilledButton(onPressed:()=>Navigator.pop(ctx,controller.text.trim()),child:const Text('Save'))]));
+  controller.dispose();
+  return answer;
 }
-
-Future<String?> prompt(BuildContext context, String title, {bool number = false}) async {
-  final controller = TextEditingController();
-  return showDialog<String>(context: context, builder: (ctx) => AlertDialog(
-    title: Text(title),
-    content: TextField(controller: controller, autofocus: true,
-      keyboardType: number ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text),
-    actions: [
-      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-      FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('OK')),
-    ],
-  ));
+class Home extends StatefulWidget {
+  const Home({super.key});
+  @override State<Home> createState()=>_HomeState();
 }
-
-class KidsPage extends StatefulWidget {
-  const KidsPage({super.key});
-  @override
-  State<KidsPage> createState() => _KidsPageState();
-}
-class _KidsPageState extends State<KidsPage> {
-  List<Map<String, dynamic>> kids = [];
-  List<Map<String, dynamic>> transactions = [];
-  String error = '';
-  @override
-  void initState() { super.initState(); reload(); }
+class _HomeState extends State<Home> {
+  List<dynamic> kids=[];
+  @override void initState(){super.initState();reload();}
   Future<void> reload() async {
-    try {
-      final a = await api.from('yt_children').select().eq('archived', false).order('created_at');
-      final b = await api.from('yt_transactions').select();
-      if (mounted) setState(() {
-        kids = List<Map<String, dynamic>>.from(a);
-        transactions = List<Map<String, dynamic>>.from(b);
-        error = '';
-      });
-    } catch (e) { if (mounted) setState(() => error = e.toString()); }
+    final result=await readKids();
+    if(mounted)setState(()=>kids=result);
   }
-  int balance(String id) => transactions.where((t) => t['child_id'] == id)
-    .fold<int>(0, (sum, t) => sum + (t['points_delta'] as num).toInt());
-  Future<void> addKid() async {
-    final name = await prompt(context, 'Child name');
-    if (name == null || name.isEmpty) return;
-    try { await api.from('yt_children').insert({'name': name}); await reload(); }
-    catch (e) { if (mounted) setState(() => error = e.toString()); }
+  Future<void> add() async {
+    final name=await ask(context,'Child name');
+    if(name==null||name.isEmpty)return;
+    kids.add({'id':DateTime.now().microsecondsSinceEpoch.toString(),
+      'name':name,'photo':'','history':<dynamic>[]});
+    await writeKids(kids);await reload();
   }
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('YT Points'), actions: [
-      IconButton(onPressed: reload, icon: const Icon(Icons.refresh)),
-      IconButton(onPressed: () => api.auth.signOut(), icon: const Icon(Icons.logout)),
-    ]),
-    floatingActionButton: FloatingActionButton.extended(
-      onPressed: addKid, icon: const Icon(Icons.person_add), label: const Text('Add kid')),
-    body: ListView(children: [
-      if (error.isNotEmpty) Text(error),
-      ...kids.map((kid) {
-        final points = balance(kid['id'].toString());
-        return Card(child: ListTile(
-          leading: CircleAvatar(child: Text(kid['name'].toString()[0].toUpperCase())),
-          title: Text(kid['name'].toString()),
-          subtitle: Text('$points points | \${(points * 0.5).toStringAsFixed(2)}'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () async {
-            await Navigator.push(context, MaterialPageRoute(builder: (_) => ProfilePage(kid: kid)));
+  @override Widget build(BuildContext context)=>Scaffold(
+    backgroundColor:Colors.white,
+    appBar:AppBar(backgroundColor:const Color(0xfff4edff),
+      title:const Text('YT Points',style:TextStyle(color:Color(0xff5823ae),fontWeight:FontWeight.bold))),
+    floatingActionButton:FloatingActionButton.extended(onPressed:add,
+      icon:const Icon(Icons.person_add),label:const Text('Add Child')),
+    body:ListView(padding:const EdgeInsets.all(16),children:[
+      const Text('Your Kids',style:TextStyle(fontSize:24,fontWeight:FontWeight.bold)),
+      const SizedBox(height:16),
+      if(kids.isEmpty)const Text('Add a child to start tracking points.'),
+      ...kids.map((item){
+        final kid=Map<String,dynamic>.from(item as Map);
+        return Card(color:Colors.white,child:ListTile(
+          contentPadding:const EdgeInsets.all(16),
+          leading:face(kid,56),title:Text(kid['name'].toString()),
+          subtitle:Text(total(kid).toString()+' points  |  '+money(total(kid))),
+          trailing:const Icon(Icons.chevron_right),
+          onTap:()async{
+            await Navigator.push(context,MaterialPageRoute(
+              builder:(_)=>Profile(id:kid['id'].toString())));
             await reload();
-          },
-        ));
+          }));
       }),
-    ]),
-  );
+    ]));
 }
-
-class ProfilePage extends StatefulWidget {
-  final Map<String, dynamic> kid;
-  const ProfilePage({super.key, required this.kid});
-  @override
-  State<ProfilePage> createState() => _ProfilePageState();
+class Profile extends StatefulWidget {
+  final String id;
+  const Profile({super.key,required this.id});
+  @override State<Profile> createState()=>_ProfileState();
 }
-class _ProfilePageState extends State<ProfilePage> {
-  List<Map<String, dynamic>> transactions = [];
-  String error = '';
-  @override
-  void initState() { super.initState(); reload(); }
+class _ProfileState extends State<Profile> {
+  List<dynamic> kids=[];
+  int index=-1;
+  Map<String,dynamic> get kid=>Map<String,dynamic>.from(kids[index] as Map);
+  @override void initState(){super.initState();reload();}
   Future<void> reload() async {
-    try {
-      final rows = await api.from('yt_transactions').select()
-        .eq('child_id', widget.kid['id']).order('created_at', ascending: false);
-      if (mounted) setState(() {
-        transactions = List<Map<String, dynamic>>.from(rows); error = '';
-      });
-    } catch (e) { if (mounted) setState(() => error = e.toString()); }
+    final result=await readKids();
+    if(mounted)setState((){
+      kids=result;
+      index=result.indexWhere((item)=>item['id']==widget.id);
+    });
   }
-  int get balance => transactions.fold<int>(
-    0, (sum, t) => sum + (t['points_delta'] as num).toInt());
-  Future<void> transact(String category) async {
-    final amount = await prompt(context,
-      category == 'purchase' ? 'Purchase amount in dollars' : 'Number of points', number: true);
-    if (amount == null) return;
-    final value = double.tryParse(amount);
-    if (value == null || !value.isFinite || value <= 0) return;
-    final points = category == 'purchase' ? (value * 2).round() : value.round();
-    if (points < 1 || points > 1000000 ||
-        (category == 'purchase' ? (points / 2 - value).abs() > 0.000001 : points != value)) {
-      setState(() => error = 'Enter whole points or a purchase amount in 50-cent increments.');
+  Future<void> save(Map<String,dynamic> updated) async {
+    kids[index]=updated;
+    await writeKids(kids);
+    await reload();
+  }
+  Future<void> photo() async {
+    final choice=await showModalBottomSheet<String>(context:context,
+      builder:(ctx)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
+        ListTile(leading:const Icon(Icons.photo_library),title:const Text('Choose from Gallery'),
+          onTap:()=>Navigator.pop(ctx,'gallery')),
+        ListTile(leading:const Icon(Icons.camera_alt),title:const Text('Take Photo'),
+          onTap:()=>Navigator.pop(ctx,'camera')),
+        ListTile(leading:const Icon(Icons.delete),title:const Text('Remove Photo'),
+          onTap:()=>Navigator.pop(ctx,'remove')),
+      ])));
+    if(choice==null)return;
+    final updated=kid;
+    if(choice=='remove'){updated['photo']='';await save(updated);return;}
+    try {
+      final picked=await ImagePicker().pickImage(
+        source:choice=='camera'?ImageSource.camera:ImageSource.gallery,
+        maxWidth:900,maxHeight:900,imageQuality:80);
+      if(picked==null)return;
+      final dir=await getApplicationDocumentsDirectory();
+      final filename='kid_'+DateTime.now().microsecondsSinceEpoch.toString()+
+        path.extension(picked.path);
+      updated['photo']=(await File(picked.path).copy(path.join(dir.path,filename))).path;
+      await save(updated);
+    }catch(e){
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content:Text('Photo error: '+e.toString())));
+    }
+  }
+  Future<void> transact(String kind) async {
+    final raw=await ask(context,kind=='purchase'?'Purchase amount in dollars':'Points',numeric:true);
+    if(raw==null)return;
+    final number=double.tryParse(raw);
+    if(number==null||!number.isFinite||number<=0)return;
+    final points=kind=='purchase'?(number*2).round():number.round();
+    if(points<1||points>1000000||
+      (kind=='purchase'?(points/2-number).abs()>0.00001:points!=number)){
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content:Text('Use whole points or purchases in 50-cent increments.')));
       return;
     }
-    final delta = category == 'reward' ? points : -points;
-    if (balance + delta < 0) {
-      setState(() => error = 'Insufficient points.');
+    final delta=kind=='reward'?points:-points;
+    if(total(kid)+delta<0){
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content:Text('Insufficient points.')));
       return;
     }
-    final reason = await prompt(context, 'Reason');
-    if (reason == null || reason.isEmpty) return;
-    try {
-      await api.from('yt_transactions').insert({
-        'child_id': widget.kid['id'], 'points_delta': delta,
-        'category': category, 'reason': reason,
-      });
-      await reload();
-    } catch (e) { if (mounted) setState(() => error = e.toString()); }
+    final reason=await ask(context,'Reason');
+    if(reason==null||reason.isEmpty)return;
+    final updated=kid;
+    (updated['history'] as List).insert(0,{
+      'delta':delta,'kind':kind,'reason':reason,
+      'date':DateTime.now().toIso8601String().substring(0,10)});
+    await save(updated);
   }
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text("${widget.kid['name']}'s Profile")),
-    body: ListView(padding: const EdgeInsets.all(16), children: [
-      const Icon(Icons.account_circle, size: 80),
-      Center(child: Text(widget.kid['name'].toString(),
-        style: Theme.of(context).textTheme.headlineMedium)),
-      Center(child: Text('$balance points | \${(balance * 0.5).toStringAsFixed(2)}',
-        style: Theme.of(context).textTheme.titleLarge)),
-      Wrap(spacing: 8, children: [
-        FilledButton(onPressed: () => transact('reward'), child: const Text('Reward')),
-        OutlinedButton(onPressed: () => transact('deduction'), child: const Text('Deduct')),
-        OutlinedButton(onPressed: () => transact('purchase'), child: const Text('Purchase')),
-      ]),
-      if (error.isNotEmpty) Text(error),
-      const ListTile(title: Text('Transaction history')),
-      ...transactions.map((t) => Card(child: ListTile(
-        title: Text(t['reason'].toString()),
-        subtitle: Text(t['category'].toString()),
-        trailing: Text("${t['points_delta']} pts"),
-      ))),
-      TextButton(onPressed: () async {
-        await api.from('yt_children').update({'archived': true}).eq('id', widget.kid['id']);
-        if (context.mounted) Navigator.pop(context);
-      }, child: const Text('Archive child')),
-    ]),
-  );
+  Future<void> rename() async {
+    final name=await ask(context,'Child name');
+    if(name==null||name.isEmpty)return;
+    final updated=kid;updated['name']=name;await save(updated);
+  }
+  Future<void> remove() async {
+    final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+      title:const Text('Remove child?'),
+      content:const Text('This permanently removes this child and their history from this device.'),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Remove'))]));
+    if(confirmed!=true)return;
+    kids.removeAt(index);await writeKids(kids);
+    if(mounted)Navigator.pop(context);
+  }
+  @override Widget build(BuildContext context){
+    if(index<0)return const Scaffold(body:Center(child:CircularProgressIndicator()));
+    final child=kid;
+    return Scaffold(backgroundColor:Colors.white,
+      appBar:AppBar(backgroundColor:const Color(0xfff4edff),
+        title:Text(child['name'].toString()),
+        actions:[IconButton(onPressed:rename,icon:const Icon(Icons.edit)),
+          IconButton(onPressed:remove,icon:const Icon(Icons.delete_outline))]),
+      body:ListView(padding:const EdgeInsets.all(16),children:[
+        Center(child:InkWell(onTap:photo,child:Stack(children:[
+          face(child,112),
+          const Positioned(right:0,bottom:0,child:CircleAvatar(
+            backgroundColor:Color(0xff6829cc),radius:19,
+            child:Icon(Icons.camera_alt,color:Colors.white,size:20))),
+        ]))),
+        const SizedBox(height:8),
+        const Center(child:Text('Tap picture to add or change photo')),
+        const SizedBox(height:20),
+        Card(color:const Color(0xfff4edff),
+          child:Padding(padding:const EdgeInsets.all(24),
+            child:Row(mainAxisAlignment:MainAxisAlignment.spaceAround,children:[
+              Column(children:[Text(total(child).toString(),
+                style:const TextStyle(fontSize:28,fontWeight:FontWeight.bold)),const Text('Points')]),
+              Column(children:[Text(money(total(child)),
+                style:const TextStyle(fontSize:28,color:Colors.green,fontWeight:FontWeight.bold)),
+                const Text('Balance')]),
+            ]))),
+        const SizedBox(height:16),
+        Wrap(spacing:8,children:[
+          FilledButton(onPressed:()=>transact('reward'),child:const Text('Reward')),
+          OutlinedButton(onPressed:()=>transact('deduction'),child:const Text('Deduct')),
+          OutlinedButton(onPressed:()=>transact('purchase'),child:const Text('Purchase')),
+        ]),
+        const SizedBox(height:20),
+        const Text('Transaction History',style:TextStyle(fontSize:20,fontWeight:FontWeight.bold)),
+        ...((child['history'] as List).map((item){
+          final entry=Map<String,dynamic>.from(item as Map);
+          return Card(child:ListTile(title:Text(entry['reason'].toString()),
+            subtitle:Text(entry['kind'].toString()+' • '+entry['date'].toString()),
+            trailing:Text(entry['delta'].toString()+' pts')));
+        })),
+      ]));
+  }
 }

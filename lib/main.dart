@@ -118,7 +118,7 @@ class _KidsPageState extends State<KidsPage> {
         return Card(child: ListTile(
           leading: CircleAvatar(child: Text(kid['name'].toString()[0].toUpperCase())),
           title: Text(kid['name'].toString()),
-          subtitle: Text('$points points | \$\u0024{(points * 0.5).toStringAsFixed(2)}'),
+          subtitle: Text('$points points | \${(points * 0.5).toStringAsFixed(2)}'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
             await Navigator.push(context, MaterialPageRoute(builder: (_) => ProfilePage(kid: kid)));
@@ -186,7 +186,7 @@ class _ProfilePageState extends State<ProfilePage> {
       const Icon(Icons.account_circle, size: 80),
       Center(child: Text(widget.kid['name'].toString(),
         style: Theme.of(context).textTheme.headlineMedium)),
-      Center(child: Text('$balance points | \$\u0024{(balance * 0.5).toStringAsFixed(2)}',
+      Center(child: Text('$balance points | \${(balance * 0.5).toStringAsFixed(2)}',
         style: Theme.of(context).textTheme.titleLarge)),
       Wrap(spacing: 8, children: [
         FilledButton(onPressed: () => transact('reward'), child: const Text('Reward')),
